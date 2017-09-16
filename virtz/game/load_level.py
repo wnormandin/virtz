@@ -46,7 +46,6 @@ class Level:
 			for map_y, line in enumerate(self.map):
 				for map_x, c in enumerate(line):
 					if wall(map_x, map_y):
-						# Draw different tiles depending on neighbourhood
 						if not wall(map_x, map_y+1):
 							if wall(map_x+1, map_y) and wall(map_x-1, map_y):
 								tile = 1, 2
