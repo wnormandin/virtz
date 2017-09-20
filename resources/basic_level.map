@@ -25,7 +25,7 @@ liquid = true
 
 [b]
 name = barrel
-tile = 28,0
+tile = 26,0
 block = true
 sprite = true
 
