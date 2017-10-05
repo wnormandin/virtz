@@ -1,0 +1,36 @@
+[level]
+tileset = basic_level.png
+characters = characters.png
+tilepath = /home/pokeybill/virtz/resources
+default = .
+map = wwwwwwwwwwwwwwwwwww
+      w#################w
+      w#..#.bb#..b#...b#w
+      w#...............#w
+      w#.#####.##...#b.#w
+      w#.#...#..#.b.#b.#w
+      w#.#...####.b.#b.#w
+      w#.##.##....b.#b.#w
+      w#...............#w
+      w#################w
+      wwwwwwwwwwwwwwwwwww
+[.]
+name = floor
+tile = 9,0
+
+[w]
+name = water
+tile = 0,0
+liquid = true
+
+[b]
+name = barrel
+tile = 26,0
+block = true
+sprite = true
+
+[#]
+name = wall
+wall = true
+block = true
+tile = 9,3
