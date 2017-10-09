@@ -6,10 +6,11 @@ import pickle
 import random
 import pygame
 import argparse
+import copy
 
-from models import MapTile
-from tiles import TileFactory
-from load_tilemap import TileCache
+from .models import MapTile
+from .tiles import TileFactory
+from .load_tilemap import TileCache
 
 this = sys.modules[__name__]
 MAX_X = 60
@@ -17,11 +18,11 @@ MAX_Y = 60
 
 test_level = (
             (
-                ('~~~,,,>,<,,?,,'),
-                ('~~,<,,?,,,.,,?'),
-                ('~,,,>,,+,,.,?,'),
-                ('~~,,<,,+^^^^^,'),
-                ('~~~~~.....~~~~')
+                (',,,%,,,>,<,,?,,'),
+                (',,,,<,,?,,,.,,?'),
+                ('%,,,>,,+,,,.,?,'),
+                (',,,,<,,,+^^^^^,'),
+                (',,,,,,.%%..~~~~')
             ),(
                 ('~~~,,,>,<,,?,,'),
                 ('~~,<,,?,,,.,,?'),
@@ -82,6 +83,8 @@ class LevelMap:
         self.loaded = False # Indicates tile map is loaded
         self._depth = 0
         self.cache = TileCache(w, h, m)
+        self._raw_map = None
+        self._real_map = None
 
     def __getitem__(self, position):
         try:
@@ -112,6 +115,26 @@ class LevelMap:
         except pickle.UnpicklingError:
             return
 
+    def in_map(self, point):
+        if point in self.world_map:
+            return True
+        return False
+
+    def get_neighbors(self, point):
+        return self._neighbors(point)
+
+    def _neighbors(self, point):
+        x, y, z = point
+        positions = [(x+1, y, z), (x-1, y, z), (x+1, y+1, z), (x+1, y-1, z), (x-1, y+1, z),
+                (x-1, y-1, z), (x, y+1, z), (x, y-1, z)]
+        return [pos for pos in positions if self.in_map(pos) and self[pos].passable]
+
+    def explore(self, position_list):
+        for position in position_list:
+            self[position].explored = True
+            for pos in self._neighbors(position):
+                self[pos].explored = True
+
     def _load_tiles(self):
         self._tiles = self.cache[self.tile_map]
         self.loaded = True
@@ -121,8 +144,31 @@ class LevelMap:
         self._real_map = translate_map(self._raw_map, self.kwargs['db_path'])
         for position in self._real_map:
             map_tile = self._real_map[position]
+            if '_' in map_tile.name:
+                map_tile.tile_type = map_tile.name.split('_')[0]
+            else:
+                map_tile.tile_type = map_tile.name
             y, x = map_tile.tile_row, map_tile.tile_col
             self._real_map[position].image = self.tile_image(y, x)
+            if map_tile.has_edges:
+                if map_tile.tile_type == 'water':
+                    map_tile.top_right_corner = self.tile_image(y+1, x-3)
+                    map_tile.top_left_corner = self.tile_image(y+1, x-2)
+                    map_tile.bot_right_corner = self.tile_image(y, x-3)
+                    map_tile.bot_left_corner = self.tile_image(y, x-2)
+                else:
+                    map_tile.top_right_corner = self.tile_image(y, x-3)
+                    map_tile.top_left_corner = self.tile_image(y, x-2)
+                    map_tile.bot_right_corner = self.tile_image(y-1, x-3)
+                    map_tile.bot_left_corner = self.tile_image(y-1, x-2)
+                map_tile.top_left_image = self.tile_image(y-1, x-1)
+                map_tile.top_image = self.tile_image(y-1, x)
+                map_tile.top_right_image = self.tile_image(y-1, x+1)
+                map_tile.left_image = self.tile_image(y, x-1)
+                map_tile.right_image = self.tile_image(y, x+1)
+                map_tile.bot_left_image = self.tile_image(y+1, x-1)
+                map_tile.bot_image = self.tile_image(y+1, x)
+                map_tile.bot_right_image = self.tile_image(y+1, x+1)
         self.ready = True
 
     def prepare(self):
@@ -130,12 +176,85 @@ class LevelMap:
         try:
             self._load_tiles()
             self._populate_map()
+            self.default_tile = self._tiles[1, 5]
         except:
             if not self.loaded:
                 print('Failed to load tiles')
             if not self.ready:
                 print('Failed to populate map')
             raise
+
+    def get_maptile_image(self, tile):
+        return self._check_edges(tile)
+
+    def _check_edges(self, tile):
+        if not tile.has_edges:
+            return tile.image
+        else:
+            x, y, z = tile.position
+
+            # Gather tile types
+            if (x, y-1, z) in self.world_map:
+                tile_top = self[x, y-1, z].tile_type
+            else:
+                tile_top = tile.tile_type
+            if (x+1, y-1, z) in self.world_map:
+                tile_top_right = self[x+1, y-1, z].tile_type
+            else:
+                tile_top_right = tile.tile_type
+            if (x-1, y-1, z) in self.world_map:
+                tile_top_left = self[x-1, y-1, z].tile_type
+            else:
+                tile_top_left = tile.tile_type
+            if (x-1, y, z) in self.world_map:
+                tile_left = self[x-1, y, z].tile_type
+            else:
+                tile_left = tile.tile_type
+            if (x+1, y, z) in self.world_map:
+                tile_right = self[x+1, y, z].tile_type
+            else:
+                tile_right = tile.tile_type
+            if (x, y+1, z) in self.world_map:
+                tile_bot = self[x, y+1, z].tile_type
+            else:
+                tile_bot = tile.tile_type
+            if (x+1, y+1, z) in self.world_map:
+                tile_bot_right = self[x+1, y+1, z].tile_type
+            else:
+                tile_bot_right = tile.tile_type
+            if (x-1, y+1, z) in self.world_map:
+                tile_bot_left = self[x-1, y+1, z].tile_type
+            else:
+                tile_bot_left = tile.tile_type
+
+            # Return appropriate edge tile image
+            if tile.tile_type != tile_top_right and tile.tile_type == tile_top and tile.tile_type == tile_right:
+                return tile.top_right_corner
+            elif tile.tile_type != tile_top_left and tile.tile_type == tile_top and tile.tile_type == tile_left:
+                return tile.top_left_corner
+            elif tile.tile_type != tile_bot_right and tile.tile_type == tile_bot and tile.tile_type == tile_right:
+                return tile.bot_right_corner
+            elif tile.tile_type != tile_bot_left and tile.tile_type == tile_bot and tile.tile_type == tile_left:
+                return tile.bot_left_corner
+            elif tile.tile_type != tile_right and tile.tile_type != tile_top:
+                return tile.top_right_image
+            elif tile.tile_type != tile_right and tile.tile_type != tile_bot:
+                return tile.bot_right_image
+            elif tile.tile_type != tile_left and tile.tile_type != tile_top:
+                return tile.top_left_image
+            elif tile.tile_type != tile_left and tile.tile_type != tile_bot:
+                return tile.bot_left_image
+            elif tile.tile_type != tile_right:
+                return tile.right_image
+            elif tile.tile_type != tile_left:
+                return tile.left_image
+            elif tile.tile_type != tile_top:
+                return tile.top_image
+            elif tile.tile_type != tile_bot:
+                return tile.bot_image
+            else:
+                return tile.image
+
 
     def tile_image(self, y, x):
         # Note the reversed order

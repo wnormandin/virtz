@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import sys
+import copy
 
-from models import MapTile, Base
+from .models import MapTile, Base
 this = sys.modules[__name__]
 
 
@@ -20,20 +22,20 @@ class TileFactory:
         ''' Returns a MapTile object matching the passed name.
             Used in map generation and conversion from saved data.
         '''
-        base_tile = self.session.query(
-                MapTile).filter(MapTile.char == char).one()
+        base_tile = copy.deepcopy(self.session.query(
+                MapTile).filter(MapTile.char == char).one())
         base_tile.position = position
         return base_tile
 
 
 tiles = [
-        ('~', 'water', False, False, False, True, 1, 3),
+        ('~', 'water', False, True, False, True, 1, 3),
         ('.', 'grass', False, False, False, False, 0, 5),
         (',', 'grass_border', False, False, False, True, 16, 3),
         ('<', 'grass_rocks', False, False, False, False, 1, 9),
-        ('>', 'grass_flower_orange', False, False, False, True, 7, 3),
-        ('/', 'grass_flower_white', False, False, False, True, 10, 3),
-        ('?', 'grass_flower_blue', False, False, False, True, 13, 3),
+        ('>', 'grass_flower_orange', False, False, False, False, 7, 3),
+        ('/', 'grass_flower_white', False, False, False, False, 10, 3),
+        ('?', 'grass_flower_blue', False, False, False, False, 13, 3),
         (':', 'dirt', False, False, False, False, 10, 8),
         (';', 'dirt_border', False, False, False, True, 10, 8),
         ('|', 'dirt_path_ns', False, False, False, False, 7, 9),

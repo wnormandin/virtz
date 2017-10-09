@@ -42,6 +42,7 @@ class TileCache:
 
 def load_tile_table(filename, w, h, m):
     ''' w=width(px), h=height(px), m=margin(px) '''
+
     image = pygame.image.load(filename).convert_alpha()
     img_width, img_height = image.get_size()
     sheet_dims = (ceil(img_width / (w + m)),
