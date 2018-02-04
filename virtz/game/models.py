@@ -7,6 +7,7 @@ import datetime
 import time
 import pygame
 import random
+import pdb
 
 # async imports
 import threading
@@ -54,6 +55,12 @@ class MapTile(Base):
     explored = Column(Boolean, unique=False, default=False)
     visited = Column(Boolean, unique=False, default=False)
 
+    # Movement cost penalty
+    movement_cost = Column(Integer, unique=False, default=1)
+
+    # Required skill to move
+    required_skill = Column(String(15), unique=False)
+
     def __init__(self, **kwargs):
         for key in kwargs:
             setattr(self, key, kwargs[key])
@@ -85,6 +92,7 @@ class MapItem(Base):
     __tablename__ = 'map_items'
     id = Column(Integer, primary_key=True)
     name = Column(String(50), nullable=False)
+    char = Column(String(1), nullable=False, default='.')
 
     # When can_get is true, the item may be picked up by a pc/npc in which
     # case the item is typically destroyed on the main map
@@ -93,9 +101,16 @@ class MapItem(Base):
     # When can_destroy is true, the map item may be destroyed,
     # changing to the destroyed image
     can_destroy = Column(Boolean, unique=False, default=False)
+    consumable = Column(Boolean, unique=False, default=False)
 
     # Indicates whether the map item has been destroyed
     destroyed = Column(Boolean, unique=False, default=False)
+
+    # Nonzero values indicate a container-type object
+    container_limit = Column(Integer, unique=False, default=0)
+
+    # Indicates a container or door is locked
+    locked = Column(Boolean, unique=False, default=False)
 
     # Coordinates for this tile's base image in the core tile map
     tile_row = Column(Integer, unique=False)
@@ -105,17 +120,72 @@ class MapItem(Base):
     destroyed_row = Column(Integer, unique=False)
     destroyed_col = Column(Integer, unique=False)
 
-    # Item sprite image location
-    sprite_col = Column(Integer, nullable=False)
-    sprite_row = Column(Integer, nullable=False)
+    # item power impacts processed effects (i.e. rest amount)
+    power = Column(Integer, unique=False, default=1)
+
+    # name of item to fill if this is a pre-filled container
+    fill_with = Column(String(50), unique=False, nullable=True)
+
+    # Item type indicator
+    is_food = Column(Boolean, unique=False, default=False)
+    is_drink = Column(Boolean, unique=False, default=False)
 
     def __repr__(self):
-        return '<Item(name={}, image_loc={})>'.format(
-                self.name, self.image_location)
+        return '<Item(name={}, position={})>'.format(
+                self.name, self.position)
+
+    @property
+    def contents(self):
+        return [i for i in self.level_map.item_list if i.container is self]
+
+    def add_item(self, item):
+        if self.has_room:
+            self._contents.append(item)
+        else:
+            raise AssertionError('No room in container: {}/{}'.format(
+                len(self._contents, self.container_limit)))
+
+    def remove_item(self, item):
+        self._contents.remove(item)
+
+    @property
+    def is_container(self):
+        return self.container_limit > 0
+
+    @property
+    def has_room(self):
+        return len(self.contents) < self.container_limit
+
+    @property
+    def item_type(self):
+        if self.is_food:
+            return 'food'
+        elif self.is_drink:
+            return 'drink'
+        elif '_' in self.name:
+            return self.name.split('_')[0]
+        else:
+            return self.name
 
     @property
     def image_location(self):
         return self.tile_row, self.tile_col
+
+    @property
+    def position(self):
+        return self._x_pos, self._y_pos, self._z_pos
+
+    @position.setter
+    def position(self, position):
+        self._x_pos, self._y_pos, self._z_pos = position
+
+    @property
+    def sprite(self):
+        return self.image
+
+    @sprite.setter
+    def sprite(self, image):
+        self.image = image
 
 
 # Models representing virtz, save game, and other related objects
@@ -183,24 +253,21 @@ class Item(Base):
         self.pos_x, self.pos_y, self.pos_z = position
 
 
-class Task(Base):
-    __tablename__ = 'tasks'
-    id = Column(Integer, primary_key=True)
-    game_id = Column(Integer, ForeignKey('saves.id'), nullable=True)
-    pos_x = Column(Integer, nullable=False, default=0)
-    pos_y = Column(Integer, nullable=False, default=0)
-    pos_z = Column(Integer, nullable=False, default=0)
-    name = Column(String(50), nullable=False)
-    task_done = Column(Boolean, nullable=False, default=False)
+class Task:
 
-    # Name of skill required
-    skill = Column(String(50), nullable=False)
-    # Value of skill required
-    skill_value = Column(Integer, nullable=False, default=1)
-    # Activity points required for completion
-    activity_points = Column(Integer, nullable=False, default=100)
+    def __init__(self, **kwargs):
+        self.task_done = False
+        self.name = kwargs['name']
+        self.game_id = kwargs.get('game_id', None)
+        self.pos_x = kwargs.get('pos_x', None)
+        self.pos_y = kwargs.get('pos_y', None)
+        self.pos_z = kwargs.get('pos_z', None)
+        self.skill = kwargs.get('skill', {'endurance':1})
+        self.activity_points = kwargs.get('activity_points', 25)
+        self.consume_item = kwargs['consume_item']
+        self.target_item = kwargs.get('target_item', None)
 
-    def __init__(self):
+    def prepare(self):
         self._points_left = self.activity_points
         self.target_item = None
         self._required_items = []
@@ -210,10 +277,15 @@ class Task(Base):
     def work(self):
         return self._points_left / self.activity_points
 
+    @property
+    def work_remaining(self):
+        return min(1 - (self._points_left / self.activity_points), 1)
+
     @work.setter
     def work(self, points):
         self._points_left -= points
         if self._points_left <= 0:
+            print('[!] Task completed: {}'.format(self.name))
             self.task_done = True
 
     @property
@@ -221,9 +293,10 @@ class Task(Base):
         return self._callback
 
     @on_complete.setter
-    def on_complete(self, callback, args):
-        self._callback = callback
-        self.callback_args = args
+    def on_complete(self, callback):
+        func, _args = callback
+        self._callback = func
+        self.callback_args = _args
 
 class Virt(Base, threading.Thread):
     __tablename__ = 'virtz'
@@ -231,6 +304,7 @@ class Virt(Base, threading.Thread):
     game_id = Column(Integer, ForeignKey('saves.id'), nullable=True)
     name = Column(String(50), nullable=False)
     alive = Column(Boolean, nullable=False, default=True)
+    level = Column(Integer, nullable=False, default=1)
 
     # Virt sprite image location details
     sprite_col = Column(Integer, nullable=False, default=0)
@@ -294,22 +368,42 @@ class Virt(Base, threading.Thread):
         self.name = name
         self.current_task = None
         self.pathfinder = pf
-        self.q, self.msg_q, self.log_q, self.q_lock = queues
+        self.q, self.msg_q, self.log_q, self.q_lock, self.kill_switch = queues
         self._energy_used = 0
-        self._thirst = -10
-        self._hunger = -10
+        self._thirst = 0
+        self._hunger = 0
+        self._damage = 0
         self.exit = False
         self._saved_task = None
         self._clock = pygame.time.Clock()
         self.loop_count = 0
+        self._death_notify = False
+        self._tired_notify = False
+        self._thirst_notify = False
+        self._hunger_notify = False
+        self.alive = True
+        self._trash = []
 
         # cache moves from a*
         self._moves = []
         self._destination = None
 
+        # vital statistic decay rates
+        self._hunger_rate = self._random_rate(5)
+        self._thirst_rate = self._random_rate(5)
+        self._energy_rate = self._random_rate(5)
+
+        # virt inventory
+        self._inventory = []
+        self._inventory_limit = 6
+
     def __repr__(self):
         return '<Virt(name={}, alive={}, personality={}, pos={})>'.format(
                 self.name, self.alive, self.personality, self.position)
+
+    def _random_rate(self, attribute_weight=1):
+        margin = 0.01 * (attribute_weight / 100)
+        return random.uniform(0.01 - margin, 0.01 + margin)
 
     def _get_task(self):
         if self._saved_task is not None:
@@ -319,7 +413,8 @@ class Virt(Base, threading.Thread):
             self.q_lock.acquire()
             while not self.q.empty():
                 task = self.q.get_nowait()
-                if getattr(self, task.skill) < task.skill_level:
+                can_do = all([getattr(self, skill) >= task.skill[skill] for skill in task.skill])
+                if not can_do:
                     self.q.put_nowait(task)
                     self.current_task = None
                 else:
@@ -329,7 +424,67 @@ class Virt(Base, threading.Thread):
             self.current_task = None
         self.q_lock.release()
 
-    def _send_log(self, msg):
+    def pick_up(self, item):
+        if not item.consumable:
+            return
+        inventory = self.flat_inventory
+        if len(self._inventory) < self._inventory_limit:
+            self._inventory.append(item)
+        else:
+            for i in self._inventory:
+                if i is not None:
+                    if i.is_container and i.has_room:
+                        i.add_item(item)
+                        item.container = i
+                        break
+
+        if item.container is None:
+            self.level_map.trash_item(item, False)
+
+        print('{} picked up {}'.format(self.name, item))
+
+    def consume_item(self, target_item):
+        assert target_item in self.flat_inventory
+        if target_item in self._inventory:
+            self._inventory.remove(target_item)
+        else:
+            for item in self._inventory:
+                if item.contains(target_item):
+                    item.remove_item(target_item)
+                    break
+        del target_item
+
+    @property
+    def carrying(self):
+        retval = []
+        for i in self._inventory:
+            if i.is_container:
+                retval.append('{} ({})'.format(i.name, len(i.contents)))
+            else:
+                retval.append('{}'.format(i.name))
+        return retval
+
+    @property
+    def flat_inventory(self):
+        inventory = [i for i in self._inventory if i is not None]
+        for item in inventory:
+            if item.is_container:
+                inventory.extend([i for i in item.contents if i is not None])
+        return inventory
+
+    @property
+    def max_hp(self):
+        return 10 + (self.endurance / 2)
+
+    @property
+    def hit_points(self):
+        return self.max_hp - self.damage
+
+    def _send_log(self, msg, nospam=False):
+        # Set nospam=True when a log message is sent each loop
+        if nospam and self.loop_count % 15 != 0:
+            return
+
         self.q_lock.acquire()
         self.log_q.put(msg)
         self.q_lock.release()
@@ -337,11 +492,8 @@ class Virt(Base, threading.Thread):
     def _get_message(self, target=None):
         try:
             while not self.msg_q.empty():
-                self.q_lock.acquire()
-                msg = self.msg_q.get()
-                if msg is None: # Poison pill
-                    self.exit = True
-                elif msg.get('id') != self.id:
+                msg = self.msg_q.get_nowait()
+                if msg.get('id') != self.id:
                     self.msg_q.put(msg)
                     msg = None
                 elif target is not None:
@@ -350,7 +502,6 @@ class Virt(Base, threading.Thread):
                         msg = None
         except Empty:
             msg = None
-        self.q_lock.release()
         return msg
 
     def _send_message(self, msg):
@@ -381,46 +532,61 @@ class Virt(Base, threading.Thread):
         # If a task is assigned, process it
         if self.current_task is not None:
             # Move to task location if not already there
-            if self.position != task.position:
-                return self._move_to, (task.position,)
+            if self.position != self.current_task.position:
+                return self._move_to, (self.current_task.position,)
             # Otherwise, do the task
             return self._do_task, None
 
+    def has_item(self, target_item):
+        if target_item in self._inventory:
+            return True
+        for i in self._inventory:
+            if i is not None:
+                if i.is_container:
+                    if target_item in item.contents:
+                        return True
+        return False
+
     def _do_task(self):
         task = self.current_task
-        if not self.current_task.task_done:
+        if task.target_item is not None and not self.has_item(task.target_item):
+            self.pick_up(task.target_item)
+        if not task.task_done:
             # Reduce task work remaining
-            self.current_task.work = getattr(self, self.current_task.skill)
-            self._energy_used += getattr(self, self.current_task.skill)
+            task.work = getattr(self, task.skill)
         else:
             # Signal task completion and reset
-            callback = self.current_task.on_complete
+            callback = task.on_complete
             if self.current_task.callback_args is not None:
                 callback(*self.current_task.callback_args)
             else:
                 callback()
-            self.q.task_done()
+            if task.consume_item and task.target_item.consumable:
+                self.consume_item(task.target_item)
+                task.target_item = None
             self.current_task = None
+            self._destination = None
 
     def _closest_item(self, item_list):
-        positions = [item.position for item in item_list]
+        positions = [i.position for i in item_list]
         distances = {p: distance_3d(self.position, p) for p in positions}
-        closest = min(distances, key=distances.get)
-        for item in item_list:
-            if item.position == closest:
-                return item
+        if distances:
+            closest = min(distances, key=distances.get)
+            for item in item_list:
+                if item.position == closest:
+                    return item
 
     def _find_item(self, item_type):
         # Find an item of the specified type.
         # Locates the closest item by default.
-        self._send_message({'id': self.id, 'request': 'items',
-                                      'item_type': item_type})
-        item_list = self._get_message('items')
-        if item_list is not None:
-            self.msg_q.task_done()
+        print('{} is looking for {}'.format(self.name, item_type))
+        item_list = self.level_map.find_item(item_type=item_type)
+        if item_list:
             item = self._closest_item(item_list)
         else:
+            print('{} could not find {}'.format(self.name, item_type))
             return
+        print('{} found {}'.format(self.name, item.name))
         return item
 
     def _idle(self):
@@ -434,12 +600,14 @@ class Virt(Base, threading.Thread):
     def _adjust_value(self, name, value):
         setattr(self, name, value)
 
-    def _handle_override(self, task_name, target_item, callback, callback_args=None):
-        task = Task()
+    def _handle_override(self, task_name, target_item,
+            callback, callback_args=None, consume_item=False):
+        task = Task(name=task_name, consume_item=consume_item)
+        task.prepare()
         task.name = task_name
         task.position = target_item.position
         task.target_item = target_item
-        task.on_complete = callback, callback_args
+        task.on_complete = (callback, callback_args)
         task.skill = 'endurance'    # Overrides always use endurance
         self._saved_task = self.current_task
         self.current_task = task
@@ -448,8 +616,9 @@ class Virt(Base, threading.Thread):
         target_food = self._find_item('food')
         if target_food is not None:
             callback = self._adjust_value
-            callback_args = ('_hunger', target_food.power)
-            self._handle_override('eating', target_food, callback, callback_args)
+            callback_args = ('_hunger', -target_food.power)
+            self._handle_override('eating', target_food,
+                    callback, callback_args, target_food.consumable)
         else:
             self._idle()
 
@@ -457,19 +626,31 @@ class Virt(Base, threading.Thread):
         target_drink = self._find_item('drink')
         if target_drink is not None:
             callback = self._adjust_value
-            callback_args = ('_thirst', target_drink.power)
-            self._handle_override('drinking', target_drink, callback, callback_args)
+            callback_args = ('_thirst', -target_drink.power)
+            self._handle_override('drinking', target_drink,
+                    callback, callback_args, target_drink.consumable)
         else:
             self._idle()
 
     def _rest(self):
         target_bed = self._find_item('bed')
-        if target_drink is not None:
+        if target_bed is not None:
             callback = self._adjust_value
             callback_args = ('_energy_used', -target_bed.power)
-            self._handle_override('resting', target_bed, callback, callback_args)
+            self._handle_override('resting', target_bed,
+                    callback, callback_args, target_bed.consumable)
         else:
             self._idle()
+
+    @property
+    def damage(self):
+        return self._damage
+
+    @damage.setter
+    def damage(self, val):
+        self._damage += val
+        if self._damage > self.max_hp:
+            self._die('damage')
 
     @property
     def eating(self):
@@ -499,10 +680,11 @@ class Virt(Base, threading.Thread):
         return False
 
     def _move(self, move):
-        self._send_log(' -  Virt {} moved from {} to {}'.format(
-                                    self.name, self.position, move))
+        #self._send_log(' -  Virt {} moved from {} to {}'.format(
+        #                            self.name, self.position, move))
         self.position = move
-        self._energy_used += 0.001
+        if self.current_task not in ('resting', 'eating', 'drinking'):
+            self._energy_used += self._energy_rate
 
     def _move_to(self, destination):
         if self._destination == destination and self._moves:
@@ -510,9 +692,13 @@ class Virt(Base, threading.Thread):
             self._move(next_move)
         else:
             self._destination = destination
-            self._send_log(' -  Virt {} finding path from {} to {}'.format(
-                                    self.name, self.position, destination))
-            self._moves = self.pathfinder[(self.position, destination)]
+            path = self.pathfinder[(self.position, destination)]
+            if path:
+                self._moves = path
+                self._move(self._moves.pop())
+            else:
+                self._send_log(' -  No path found! {} is idling'.format(self.name))
+                self._idle()
 
     def work(self):
         action = self._next_task()
@@ -523,27 +709,34 @@ class Virt(Base, threading.Thread):
             else:
                 result = func()
         else:
-            self._send_log(' -  Virt {} is idling'.format(self.name))
             self._idle()
 
     @property
     def need_rest(self):
-        if self._energy_used > self.daily_energy:
-            self._send_log(' -  Virt {} is tired'.format(self.name))
+        if float(self.energy_left) < 0:
+            if not self._tired_notify:
+                self._send_log(' -  Virt {} is tired'.format(self.name), True)
+            self._tired_notify = True
             return True
+        self._thirst_notify = False
         return False
 
     @property
     def need_food(self):
         if self._hunger >= 0:
-            self._send_log(' -  Virt {} is hungry'.format(self.name))
+            if not self._hunger_notify:
+                self._send_log(' -  Virt {} is hungry'.format(self.name), True)
+            self._hunger_notify = True
             return True
+        self._hunger_notify = False
         return False
 
     @property
     def need_drink(self):
         if self._thirst >= 0:
-            self._send_log(' -  Virt {} is thirsty'.format(self.name))
+            if not self._thirst_notify:
+                self._send_log(' -  Virt {} is thirsty'.format(self.name), True)
+            self._thirst_notify = True
             return True
         return False
 
@@ -558,7 +751,19 @@ class Virt(Base, threading.Thread):
 
     @property
     def daily_energy(self):
-        return (self.endurance * self.energy) * 2 + self.lazy
+        return max((self.endurance * self.energy) + self.lazy, 10)
+
+    @property
+    def energy_left(self):
+        return '{:0.2f}'.format(self.daily_energy - self._energy_used)
+
+    @property
+    def hunger_score(self):
+        return '{:0.2f}'.format(self._hunger)
+
+    @property
+    def thirst_score(self):
+        return '{:0.2f}'.format(self._thirst)
 
     @property
     def position(self):
@@ -568,23 +773,55 @@ class Virt(Base, threading.Thread):
     def position(self, pos):
         self.pos_x, self.pos_y, self.pos_z = pos
 
+    @property
+    def destination(self):
+        return self._destination
+
+    def _die(self, reason=None):
+        if not self._death_notify:
+            if reason is not None:
+                death_str = ' - {} has died of {}!'.format(self.name, reason)
+            else:
+                death_str = ' - {} has died!'.format(self.name)
+            self._send_log(death_str)
+            self.sprite = pygame.transform.rotate(self._sprite_image, 90)
+        self._death_notify = True
+        self.alive = False
+
     def run(self):
         def pre_loop():
             if self.loop_count >= 1000000:
                 self.loop_count = 0
 
         def post_loop():
-            self.loop_count +=1
-            self._hunger += 0.001
-            self._thirst += 0.001
+            self.loop_count += 1
+            self._hunger += self._hunger_rate
+            self._thirst += self._thirst_rate
+            if self._hunger > 10:
+                self._die('hunger')
+            elif self._thirst > 10:
+                self._die('thirst')
+
+        def tick(rate=2):
+            self._clock.tick(rate)
 
         # Main AI loop here
         # call using start()
-        while not self.exit:
-            pre_loop()
-            self._clock.tick(2) # Sync with main thread
-            self.work()
-            post_loop()
+        self.pause = False
+        while not self.kill_switch.is_set():
+            #pdb.set_trace()
+            try:
+                if not self.alive:
+                    return
+                if not self.pause:
+                    pre_loop()
+                    tick()
+                    self.work()
+                    post_loop()
+                else:
+                    tick()
+            except:
+                raise
 
 def create_db(path):
     engine = create_engine(path, echo=True)

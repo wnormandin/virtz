@@ -7,6 +7,7 @@ import sys
 import random
 import argparse
 import time
+from threading import Event
 
 from .models import Virt, Base
 from .personality import PersonalityFactory, personalities
@@ -17,7 +18,9 @@ this = sys.modules[__name__]
 
 def random_name():
     names = ['Fred', 'Paul', 'Mark', 'Bill', 'Mike', 'Phil', 'John', 'James',
-            'Josh', 'Chris', 'Steve', 'Peter', 'Carl', 'Adam', 'Blake']
+            'Josh', 'Chris', 'Steve', 'Peter', 'Carl', 'Adam', 'Blake', 'Jake',
+            'Mary', 'Ashley', 'Kim', 'Grayson', 'Ginny', 'Pearl', 'Marcat',
+            'Bob', 'Will', 'Percy', 'Lancelot', 'Frank', 'Charlie', 'Dennis']
     return random.choice(names)
 
 def randomize_fears():
@@ -65,7 +68,8 @@ class CharacterFactory:
 
         virt = Virt(random_name(), self.queues, self.pf)
         virt.id = time.clock()
-        virt.sprite = self.sprites[0, 6]
+        sprite_loc = random.choice([(0, 6), (0, 7), (0, 8)])
+        virt.sprite = self.sprites[sprite_loc]
         virt.personality = personality_name
         virt.position = position
 

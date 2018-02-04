@@ -12,4 +12,9 @@ class DisplayManager:
 
     @screen.setter
     def screen(self, mode):
-        self._screen = pygame.display.set_mode(mode)
+        resolution, fullscreen = mode
+        if fullscreen:
+            self._screen = pygame.display.set_mode(resolution, pygame.FULLSCREEN)
+        else:
+            self._screen = pygame.display.set_mode(resolution)
+        pygame.display.set_caption('virtz')

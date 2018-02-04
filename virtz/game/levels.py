@@ -7,9 +7,10 @@ import random
 import pygame
 import argparse
 import copy
+#import pdb
 
 from .models import MapTile
-from .tiles import TileFactory
+from .tiles import TileFactory, ItemFactory
 from .load_tilemap import TileCache
 
 this = sys.modules[__name__]
@@ -85,6 +86,8 @@ class LevelMap:
         self.cache = TileCache(w, h, m)
         self._raw_map = None
         self._real_map = None
+        self._trash = []
+        self.item_list = []
 
     def __getitem__(self, position):
         try:
@@ -125,11 +128,26 @@ class LevelMap:
 
     def _neighbors(self, point):
         x, y, z = point
-        positions = [(x+1, y, z), (x-1, y, z), (x+1, y+1, z), (x+1, y-1, z), (x-1, y+1, z),
-                (x-1, y-1, z), (x, y+1, z), (x, y-1, z)]
-        return [pos for pos in positions if self.in_map(pos) and self[pos].passable]
+        positions = [(x+1, y, z), (x-1, y, z), (x+1, y+1, z),
+                (x+1, y-1, z), (x-1, y+1, z), (x-1, y-1, z),
+                (x, y+1, z), (x, y-1, z)]
+        base_list = [p for p in positions if self.in_map(p) and self[p].passable]
+        for p in positions:
+            if self.has_opening(p):
+                base_list.append(p)
+        return base_list
+
+    def has_opening(self, position):
+        # Determine whether a blocked tile has an opening object like
+        # a door or tunnel
+        for i in self.item_list:
+            if i.item_type == 'door' and i.position == position:
+                if not i.locked:
+                    return True
+        return False
 
     def explore(self, position_list):
+        #pdb.set_trace()
         for position in position_list:
             self[position].explored = True
             for pos in self._neighbors(position):
@@ -140,8 +158,12 @@ class LevelMap:
         self.loaded = True
 
     def _populate_map(self):
-        self._raw_map = self._open_map()
+        print('[!] Populating the map and items')
+        map_dict = self._open_map()
+        self._raw_map = map_dict['tiles']
+        self._item_map = map_dict['items']
         self._real_map = translate_map(self._raw_map, self.kwargs['db_path'])
+
         for position in self._real_map:
             map_tile = self._real_map[position]
             if '_' in map_tile.name:
@@ -169,13 +191,34 @@ class LevelMap:
                 map_tile.bot_left_image = self.tile_image(y+1, x-1)
                 map_tile.bot_image = self.tile_image(y+1, x)
                 map_tile.bot_right_image = self.tile_image(y+1, x+1)
+
+        items = []
+        item_factory = ItemFactory(self.kwargs['db_path'])
+        for pos in self._item_map:
+            char = self._item_map[pos]
+            item = item_factory.get_item(char, pos)
+            item.level_map = self
+            item.container = None
+            item.sprite = self.tile_image(*item.image_location)
+            if item.item_type == 'door' and not item.locked:
+                self._real_map[pos].blocking=False
+            items.append(item)
+            if item.is_container and item.fill_with is not None:
+                for n in range(item.container_limit):
+                    sub_item = item_factory.get_item(None, pos, item.fill_with)
+                    sub_item.container = item
+                    sub_item.sprite = self.tile_image(*sub_item.image_location)
+                    sub_item.level_map = self
+                    items.append(sub_item)
+
         self.ready = True
+        return items
 
     def prepare(self):
         # Load the tile_map, level_map, and make sure all is ready
         try:
             self._load_tiles()
-            self._populate_map()
+            self.item_list = self._populate_map()
             self.default_tile = self._tiles[1, 5]
         except:
             if not self.loaded:
@@ -183,6 +226,33 @@ class LevelMap:
             if not self.ready:
                 print('Failed to populate map')
             raise
+        print('[!] Tiles and Items loaded')
+
+    @property
+    def items(self):
+        return self.item_list
+
+    @items.setter
+    def items(self, item):
+        self.item_list.append(item)
+
+    def find_item(self, item_type=None, item_name=None, position=None):
+        if position is not None:
+            return [item for item in self.item_list if item.position==position]
+        retval = []
+        for item in self.item_list:
+            if item_name is not None:
+                if item.name == item_name:
+                    retval.append(item)
+            elif item_type is not None:
+                if item.item_type == item_type:
+                    retval.append(item)
+        return retval
+
+    def trash_item(self, item, store=False):
+        if item not in self._trash and store:
+            self._trash.append(item)
+        self.items.remove(item)
 
     def get_maptile_image(self, tile):
         return self._check_edges(tile)
@@ -254,7 +324,6 @@ class LevelMap:
                 return tile.bot_image
             else:
                 return tile.image
-
 
     def tile_image(self, y, x):
         # Note the reversed order
